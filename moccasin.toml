@@ -7,6 +7,11 @@ dependencies = ["snekmate"]
 [networks.pyevm]
 is_zksync = false
 
+[networks.base]
+url = "https://mainnet.base.org/"
+chain_id = 8453
+fork = true
+
 [networks.anvil]
 url = "http://127.0.0.1:8545"
 prompt_live = false

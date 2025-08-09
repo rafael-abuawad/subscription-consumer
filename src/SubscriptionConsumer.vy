@@ -54,25 +54,20 @@ struct ExtraArgsV1:
 
 
 MAX_ARGS_SIZE: constant(uint256) = 1_024
-
-MAX_REQUEST_IDS: constant(uint256) = 256
-
-MAX_NUM_WORDS: constant(uint32) = 16
-
+MAX_REQUESTS: constant(uint256) = 1000
+MAX_NUM_WORDS: constant(uint32) = 2
 EXTRA_ARGS_V1_TAG: public(constant(bytes4)) = 0x92FD1338  # == `bytes4(keccak256("VRF ExtraArgsV1"))`
 
 
 # @dev The VRF coordinator address.
-vrfCoordinator: public(IVRFCoordinatorV2Plus)
+vrfCoordinator: public(immutable(IVRFCoordinatorV2Plus))
 
 
 # @dev The key hash of the VRF coordinator.
 # The gas lane to use, which specifies the maximum gas price to bump to.
 # For a list of available gas lanes on each network,
 # see https://docs.chain.link/vrf/v2-5/supported-networks
-keyHash: public(
-    constant(bytes32)
-) = 0x787d74caea10b2b357790d5b5247c2f63d1d91572a9846f780606e4d953677ae
+keyHash: public(immutable(bytes32))
 
 
 # @dev The subscription ID of the VRF coordinator.
@@ -82,38 +77,52 @@ keyHash: public(
 # this limit based on the network that you select, the size of the request,
 # and the processing of the callback request in the fulfillRandomWords()
 # function.
-callbackGasLimit: public(constant(uint32)) = 1000000
+callbackGasLimit: public(immutable(uint32))
 
 
 # @dev The default is 3, but you can set this higher.
-requestConfirmations: public(constant(uint16)) = 3
+requestConfirmations: public(immutable(uint16))
 
 
 # @dev For this example, retrieve 2 random values in one request.
-# Cannot exceed VRFCoordinatorV2_5.MAX_NUM_WORDS.
-numWords: public(constant(uint32)) = 2
+# Cannot exceed MAX_NUM_WORDS.
+numWords: public(immutable(uint32))
 
 
 # @dev The subscription ID of the VRF coordinator.
-subscriptionId: public(uint64)
+subscriptionId: public(immutable(uint64))
 
 
 # @dev A mapping of request IDs to request statuses.
-_requests: HashMap[uint256, RequestStatus]
+requests: HashMap[uint256, RequestStatus]
 
 
 # @dev A mapping of request IDs to request statuses.
-_requestIds: DynArray[uint256, MAX_REQUEST_IDS]
+requestIds: DynArray[uint256, MAX_REQUESTS]
 
 
 # @dev A list of requested random words.
-_randomWords: DynArray[uint256, MAX_ARGS_SIZE]
+randomWords: DynArray[uint256, MAX_ARGS_SIZE]
 
 
 @deploy
-def __init__(vrfCoordinator: address):
-    assert vrfCoordinator != empty(address)
-    self.vrfCoordinator = IVRFCoordinatorV2Plus(vrfCoordinator)
+def __init__(
+    _vrfCoordinator: address,
+    _keyHash: bytes32,
+    _callbackGasLimit: uint32,
+    _requestConfirmations: uint16,
+    _numWords: uint32,
+    _subscriptionId: uint64,
+):
+    assert _vrfCoordinator != empty(address)
+    assert _numWords <= MAX_NUM_WORDS
+
+    vrfCoordinator = IVRFCoordinatorV2Plus(_vrfCoordinator)
+    keyHash = _keyHash
+    callbackGasLimit = _callbackGasLimit
+    requestConfirmations = _requestConfirmations
+    numWords = _numWords
+    subscriptionId = _subscriptionId
     ow.__init__()
 
 
@@ -140,9 +149,9 @@ def _fulfillRandomWords(
     @param randomWords the VRF output expanded to the requested number of words
     @return bool - True if the fulfillment is successful
     """
-    assert self._requests[requestId].exists  # Request must exist
-    self._requests[requestId].fulfilled = True
-    self._requests[requestId].randomWords = randomWords
+    assert self.requests[requestId].exists  # Request must exist
+    self.requests[requestId].fulfilled = True
+    self.requests[requestId].randomWords = randomWords
     log RequestFulfilled(requestId=requestId, randomWords=randomWords)
     return False
 
@@ -153,10 +162,10 @@ def requestRandomWords() -> uint256:
     @dev Request random words from the VRF coordinator
     @return requestId The ID of the request
     """
-    requestId: uint256 = extcall self.vrfCoordinator.requestRandomWords(
+    requestId: uint256 = extcall vrfCoordinator.requestRandomWords(
         RandomWordsRequest(
             keyHash=keyHash,
-            subId=self.subscriptionId,
+            subId=subscriptionId,
             requestConfirmations=requestConfirmations,
             callbackGasLimit=callbackGasLimit,
             numWords=numWords,
@@ -164,37 +173,26 @@ def requestRandomWords() -> uint256:
         )
     )
     randomWords: DynArray[uint256, MAX_NUM_WORDS] = []
-    self._requests[requestId] = RequestStatus(
+    self.requests[requestId] = RequestStatus(
         fulfilled=False, exists=True, randomWords=randomWords
     )
-    self._requestIds.append(requestId)
+    self.requestIds.append(requestId)
     log RequestSent(requestId=requestId, numWords=numWords)
     return requestId
 
 
 @external
 def rawFulfillRandomWords(
-    requestId: uint256, randomWords: DynArray[uint256, MAX_NUM_WORDS]
+    requestId: uint256,
+    randomWords: DynArray[uint256, MAX_NUM_WORDS]
 ):
     """
     @dev rawFulfillRandomness is called by VRFCoordinator when it receives a valid VRF
             proof. rawFulfillRandomness then calls fulfillRandomness, after validating
             the origin of the call
     """
-    assert msg.sender == self.vrfCoordinator.address  # Only the VRF coordinator can fulfill the request
+    assert msg.sender == vrfCoordinator.address  # Only the VRF coordinator can fulfill the request
     self._fulfillRandomWords(requestId, randomWords)
-
-
-@external
-def setCoordinator(vrfCoordinator: address):
-    """
-    @dev Set the VRF coordinator address
-    @param vrfCoordinator The new VRF coordinator address
-    """
-    ow._check_owner()
-    assert vrfCoordinator != empty(address)
-    self.vrfCoordinator = IVRFCoordinatorV2Plus(vrfCoordinator)
-    log CoordinatorSet(coordinator=vrfCoordinator)
 
 
 @external
@@ -202,12 +200,12 @@ def setCoordinator(vrfCoordinator: address):
 def getRequestStatus(
     requestId: uint256,
 ) -> (bool, DynArray[uint256, MAX_NUM_WORDS]):
-    assert self._requests[requestId].exists  # Request must exist
-    request: RequestStatus = self._requests[requestId]
+    assert self.requests[requestId].exists  # Request must exist
+    request: RequestStatus = self.requests[requestId]
     return (request.fulfilled, request.randomWords)
 
 
 @external
 @view
 def lastRequestId() -> uint256:
-    return self._requestIds[len(self._requestIds) - 1]
+    return self.requestIds[len(self.requestIds) - 1]
